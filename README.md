@@ -1,6 +1,5 @@
 # SteemWallet - Blockchain Wallet Application
 
-![Project Banner](https://via.placeholder.com/1200x400?text=SteemWallet+Banner) <!-- Replace with actual banner image -->
 
 ## 📌 Project Repository
 
@@ -62,8 +61,7 @@ npm run dev
 
 Deploy your application to any of the following platforms with ease:
 
-[![Deploy to Vercel](https://vercel.com/button)](https://vercel.com/)
-[![Deploy to Netlify](https://www.netlify.com/img/deploy/button.svg)](https://www.netlify.com/)
+
 
 Supported Platforms:
 
