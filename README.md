@@ -7,7 +7,7 @@
 
 ## 🌟 Project Overview
 
-SteemWallet is a secure, open-source cryptocurrency wallet tailored for the Steem blockchain. It offers a modern and intuitive interface for users to manage their STEEM tokens, perform transactions, and interact with the blockchain seamlessly.This project has  Licencing Requirments for some use cases , Please see tab=License-1-ov-file
+SteemWallet is a secure, open-source cryptocurrency wallet tailored for the Steem blockchain. It offers a modern and intuitive interface for users to manage their STEEM tokens, perform transactions, and interact with the blockchain seamlessly.This project has  Licencing Requirments for some use cases , Please see https://github.com/blazeapps007/steemWallet?tab=License-1-ov-file
 ### Core Technologies
 
 * ⚡ **Vite** - Fast and optimized frontend tooling
