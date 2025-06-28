@@ -118,7 +118,7 @@ Commercial use, including but not limited to selling, sublicensing, or incorpora
 
 THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND.
 
-For commercial use inquiries, contact: your-email@example.com
+For commercial use inquiries, contact: https://steemit.com/@blaze.apps
 
 
 © 2023 SteemWallet Project. All rights reserved for commercial use.
