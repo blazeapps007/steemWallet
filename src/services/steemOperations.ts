@@ -2,8 +2,60 @@
 import * as dsteem from 'dsteem';
 import { getPrimaryEndpoint } from '@/config/api';
 
-// Initialize dsteem client with centralized endpoint configuration
-const client = new dsteem.Client(getPrimaryEndpoint());
+// Mapping from endpoint URLs to proxy keys (must match vite.config.ts)
+const ENDPOINT_TO_PROXY_KEY: Record<string, string> = {
+  'https://api.moecki.online': 'moecki',
+  'https://steemd.steemworld.org': 'steemworld',
+  'https://api.pennsif.net': 'pennsif',
+  'https://api.steemit.com': 'steemit',
+  'https://api.justyy.com': 'justyy',
+  'https://api.wherein.io': 'wherein',
+  'https://api.steememory.com': 'steememory',
+  'https://steemapi.boylikegirl.club': 'boylikegirl',
+  'https://api.steemitdev.com': 'steemitdev',
+};
+
+// Check if running in Tauri - check multiple ways to be sure
+const isTauriApp = (): boolean => {
+  if (typeof window === 'undefined') return false;
+  if ('__TAURI__' in window) return true;
+  if ('__TAURI_INTERNALS__' in window) return true;
+  return false;
+};
+
+// Get the endpoint to use - in dev mode, use the Vite proxy for the selected node
+const getClientEndpoint = (): string => {
+  // In development mode (browser without Tauri), use the Vite proxy
+  if (import.meta.env.DEV && typeof window !== 'undefined' && !isTauriApp()) {
+    const primaryEndpoint = getPrimaryEndpoint();
+    
+    // Find the proxy key for the user's selected endpoint
+    for (const [endpoint, key] of Object.entries(ENDPOINT_TO_PROXY_KEY)) {
+      if (primaryEndpoint.startsWith(endpoint)) {
+        return `/api/steem/${key}`;
+      }
+    }
+    
+    // Fallback to moecki if endpoint not found
+    return '/api/steem/moecki';
+  }
+  return getPrimaryEndpoint();
+};
+
+// Create a getter for the client to ensure we always use the current endpoint
+const getClient = (): dsteem.Client => {
+  return new dsteem.Client(getClientEndpoint());
+};
+
+// Keep a reference for the client that can be refreshed
+let client = new dsteem.Client(getClientEndpoint());
+
+// Function to refresh the client with the current endpoint
+export const refreshClient = (): void => {
+  const endpoint = getClientEndpoint();
+  client = new dsteem.Client(endpoint);
+  console.log('Steem client refreshed with endpoint:', endpoint);
+};
 
 export interface TransferOperation {
   from: string;
@@ -62,6 +114,17 @@ export interface SetResetAccountOperation {
   account: string;
   current_reset_account: string;
   reset_account: string;
+}
+
+export interface UpdatePostingAuthOperation {
+  account: string;
+  posting: {
+    weight_threshold: number;
+    account_auths: [string, number][];
+    key_auths: [string, number][];
+  };
+  memo_key: string;
+  json_metadata: string;
 }
 
 export interface PasswordChangeData {
@@ -179,10 +242,47 @@ export class SteemOperationsService {
       {
         voter: operation.voter,
         proposal_ids: operation.proposal_ids,
-        approve: operation.approve
+        approve: operation.approve,
+        extensions: []
       }
     ];
     return client.broadcast.sendOperations([updateProposalVotesOp], privateKey);
+  }
+
+  // Create limit order (for internal market trading)
+  async createLimitOrder(
+    owner: string,
+    orderid: number,
+    amountToSell: string,
+    minToReceive: string,
+    fillOrKill: boolean,
+    expiration: string,
+    privateKey: dsteem.PrivateKey
+  ): Promise<any> {
+    const limitOrderCreateOp: dsteem.Operation = [
+      'limit_order_create',
+      {
+        owner,
+        orderid,
+        amount_to_sell: amountToSell,
+        min_to_receive: minToReceive,
+        fill_or_kill: fillOrKill,
+        expiration
+      }
+    ];
+    return client.broadcast.sendOperations([limitOrderCreateOp], privateKey);
+  }
+
+  // Cancel limit order
+  async cancelLimitOrder(owner: string, orderid: number, privateKey: dsteem.PrivateKey): Promise<any> {
+    const limitOrderCancelOp: dsteem.Operation = [
+      'limit_order_cancel',
+      {
+        owner,
+        orderid
+      }
+    ];
+    return client.broadcast.sendOperations([limitOrderCancelOp], privateKey);
   }
 
   // Generic broadcast operation method
@@ -318,6 +418,20 @@ export class SteemOperationsService {
       }
     ];
     return client.broadcast.sendOperations([setResetAccountOp], privateKey);
+  }
+
+  // Update posting authority (for revoking authorized apps - requires active/owner key)
+  async updatePostingAuth(operation: UpdatePostingAuthOperation, privateKey: dsteem.PrivateKey): Promise<any> {
+    const accountUpdateOp: dsteem.Operation = [
+      'account_update',
+      {
+        account: operation.account,
+        posting: operation.posting,
+        memo_key: operation.memo_key,
+        json_metadata: operation.json_metadata
+      }
+    ];
+    return client.broadcast.sendOperations([accountUpdateOp], privateKey);
   }
 
   // Change account password (generates new keys and updates all authorities)

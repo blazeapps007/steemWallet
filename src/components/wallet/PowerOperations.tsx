@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -8,6 +8,8 @@ import * as dsteem from 'dsteem';
 import { steemOperations } from '@/services/steemOperations';
 import { Lock, Loader2, ArrowDown } from "lucide-react";
 import { useSteemAccount } from "@/hooks/useSteemAccount";
+import { SecureStorageFactory } from '@/services/secureStorage';
+import { getDecryptedKey } from '@/hooks/useSecureKeys';
 import PowerDownStatus from './PowerDownStatus';
 
 const PowerOperations = () => {
@@ -16,11 +18,29 @@ const PowerOperations = () => {
   const [powerDownAmount, setPowerDownAmount] = useState("");
   const [isProcessingPowerUp, setIsProcessingPowerUp] = useState(false);
   const [isProcessingPowerDown, setIsProcessingPowerDown] = useState(false);
+  const [username, setUsername] = useState<string | null>(null);
   const { toast } = useToast();
+  
+  // Refs to track if transactions have been submitted
+  const powerUpSubmittedRef = useRef(false);
+  const powerDownSubmittedRef = useRef(false);
+
+  // Load credentials from secure storage
+  useEffect(() => {
+    const loadCredentials = async () => {
+      try {
+        const storage = SecureStorageFactory.getInstance();
+        const user = await storage.getItem('steem_username');
+        setUsername(user);
+      } catch (error) {
+        console.error('Error loading credentials from storage:', error);
+      }
+    };
+    loadCredentials();
+  }, []);
 
   // Check if user is logged in
-  const isLoggedIn = localStorage.getItem('steem_username');
-  const username = localStorage.getItem('steem_username');
+  const isLoggedIn = username !== null;
 
   const { data: account, refetch } = useSteemAccount(username || '');
 
@@ -32,8 +52,8 @@ const PowerOperations = () => {
   const handlePowerUp = async () => {
     if (!isLoggedIn) {
       toast({
-        title: "Login Required",
-        description: "Please login to perform this operation",
+        title: "Authentication Required",
+        description: "Please log in to perform this operation.",
         variant: "destructive",
       });
       return;
@@ -47,9 +67,15 @@ const PowerOperations = () => {
       });
       return;
     }
-
-    const loginMethod = localStorage.getItem('steem_login_method');
     
+    // Prevent duplicate submissions - CRITICAL
+    if (powerUpSubmittedRef.current || isProcessingPowerUp) {
+      console.log('Blocking duplicate power up submission');
+      return;
+    }
+    
+    // CRITICAL: Mark as submitted IMMEDIATELY
+    powerUpSubmittedRef.current = true;
     setIsProcessingPowerUp(true);
 
     try {
@@ -59,18 +85,29 @@ const PowerOperations = () => {
         amount: `${powerUpAmount} STEEM`
       };
 
-      if (loginMethod === 'keychain') {
-        await handleKeychainPowerUp(username!, operation);
-      } else if (loginMethod === 'privatekey' || loginMethod === 'masterpassword') {
-        await handlePrivateKeyPowerUp(operation);
-      }
-    } catch (error) {
+      await handlePrivateKeyPowerUp(operation);
+    } catch (error: any) {
       console.error('Power up error:', error);
-      toast({
-        title: "Operation Failed",
-        description: "Failed to power up. Please try again.",
-        variant: "destructive",
-      });
+      
+      // Check for duplicate transaction
+      const isDuplicate = error?.message?.includes('duplicate') || error?.jse_shortmsg?.includes('duplicate');
+      if (isDuplicate) {
+        toast({
+          title: "Power Up Already Processed",
+          description: "This power up transaction was already submitted.",
+          variant: "success",
+        });
+        setPowerUpAmount("");
+        setPowerUpRecipient("");
+        refetch();
+      } else {
+        toast({
+          title: "Power Up Failed",
+          description: "Unable to complete power up. Please try again.",
+          variant: "destructive",
+        });
+      }
+      powerUpSubmittedRef.current = false;
       setIsProcessingPowerUp(false);
     }
   };
@@ -78,8 +115,8 @@ const PowerOperations = () => {
   const handlePowerDown = async () => {
     if (!isLoggedIn) {
       toast({
-        title: "Login Required",
-        description: "Please login to perform this operation",
+        title: "Authentication Required",
+        description: "Please log in to perform this operation.",
         variant: "destructive",
       });
       return;
@@ -102,126 +139,57 @@ const PowerOperations = () => {
       });
       return;
     }
-
-    const loginMethod = localStorage.getItem('steem_login_method');
     
+    // Prevent duplicate submissions - CRITICAL
+    if (powerDownSubmittedRef.current || isProcessingPowerDown) {
+      console.log('Blocking duplicate power down submission');
+      return;
+    }
+    
+    // CRITICAL: Mark as submitted IMMEDIATELY
+    powerDownSubmittedRef.current = true;
     setIsProcessingPowerDown(true);
 
     try {
       const vestsAmount = await steemOperations.convertSteemToVests(`${powerDownAmount} STEEM`);
 
-      if (loginMethod === 'keychain') {
-        await handleKeychainPowerDown(username!, vestsAmount);
-      } else if (loginMethod === 'privatekey' || loginMethod === 'masterpassword') {
-        await handlePrivateKeyPowerDown(username!, vestsAmount);
-      }
-    } catch (error) {
+      await handlePrivateKeyPowerDown(username!, vestsAmount);
+    } catch (error: any) {
       console.error('Power down error:', error);
-      toast({
-        title: "Operation Failed",
-        description: "Failed to power down. Please try again.",
-        variant: "destructive",
-      });
-      setIsProcessingPowerDown(false);
-    }
-  };
-
-  const handleKeychainPowerUp = async (username: string, operation: any) => {
-    if (!window.steem_keychain) {
-      toast({
-        title: "Keychain Not Available",
-        description: "Steem Keychain not found",
-        variant: "destructive",
-      });
-      setIsProcessingPowerUp(false);
-      return;
-    }
-
-    try {
-      window.steem_keychain.requestBroadcast(
-        username,
-        [['transfer_to_vesting', operation]],
-        'Active',
-        (response: any) => {
-          if (response.success) {
-            toast({
-              title: "Power Up Successful",
-              description: `${powerUpAmount} STEEM has been powered up`,
-            });
-            setPowerUpAmount("");
-            setPowerUpRecipient("");
-            refetch();
-          } else {
-            toast({
-              title: "Operation Failed",
-              description: response.message || "Transaction was rejected",
-              variant: "destructive",
-            });
-          }
-          setIsProcessingPowerUp(false);
-        }
-      );
-    } catch (error: any) {
-      toast({
-        title: "Operation Failed",
-        description: error.message || "Failed to process operation",
-        variant: "destructive",
-      });
-      setIsProcessingPowerUp(false);
-    }
-  };
-
-  const handleKeychainPowerDown = async (username: string, vestsAmount: string) => {
-    if (!window.steem_keychain) {
-      toast({
-        title: "Keychain Not Available",
-        description: "Steem Keychain not found",
-        variant: "destructive",
-      });
-      setIsProcessingPowerDown(false);
-      return;
-    }
-
-    try {
-      window.steem_keychain.requestBroadcast(
-        username,
-        [['withdraw_vesting', { account: username, vesting_shares: vestsAmount }]],
-        'Active',
-        (response: any) => {
-          if (response.success) {
-            toast({
-              title: "Power Down Initiated",
-              description: `${powerDownAmount} STEEM power down started`,
-            });
-            setPowerDownAmount("");
-            refetch();
-          } else {
-            toast({
-              title: "Operation Failed",
-              description: response.message || "Transaction was rejected",
-            });
-          }
-          setIsProcessingPowerDown(false);
-        }
-      );
-    } catch (error: any) {
-      toast({
-        title: "Operation Failed",
-        description: error.message || "Failed to process operation",
-      });
+      
+      // Check for duplicate transaction
+      const isDuplicate = error?.message?.includes('duplicate') || error?.jse_shortmsg?.includes('duplicate');
+      if (isDuplicate) {
+        toast({
+          title: "Power Down Already Processed",
+          description: "This power down transaction was already submitted.",
+          variant: "success",
+        });
+        setPowerDownAmount("");
+        refetch();
+      } else {
+        toast({
+          title: "Power Down Failed",
+          description: "Unable to initiate power down. Please try again.",
+          variant: "destructive",
+        });
+      }
+      powerDownSubmittedRef.current = false;
       setIsProcessingPowerDown(false);
     }
   };
 
   const handlePrivateKeyPowerUp = async (operation: any) => {
-    const privateKeyString = localStorage.getItem('steem_active_key');
+    // Get decrypted key from secure storage
+    const privateKeyString = await getDecryptedKey(username!, 'active');
     if (!privateKeyString) {
       toast({
-        title: "Private Key Not Found",
-        description: "Active key required for this operation",
+        title: "Active Key Required",
+        description: "An active key is required for power up. Please import your key in Account settings.",
         variant: "destructive",
       });
       setIsProcessingPowerUp(false);
+      powerUpSubmittedRef.current = false;
       return;
     }
 
@@ -231,13 +199,32 @@ const PowerOperations = () => {
       
       toast({
         title: "Power Up Successful",
-        description: `${powerUpAmount} STEEM has been powered up`,
+        description: `${powerUpAmount} STEEM has been powered up successfully.`,
+        variant: "success",
       });
       setPowerUpAmount("");
       setPowerUpRecipient("");
       refetch();
+      // DO NOT reset powerUpSubmittedRef on success - will be reset when form is reinitiated
       setIsProcessingPowerUp(false);
+      powerUpSubmittedRef.current = false;
     } catch (error: any) {
+      // Check for duplicate transaction - treat as SUCCESS
+      const isDuplicate = error?.message?.includes('duplicate') || error?.jse_shortmsg?.includes('duplicate');
+      if (isDuplicate) {
+        toast({
+          title: "Power Up Already Processed",
+          description: "This power up transaction was already submitted successfully.",
+          variant: "success",
+        });
+        setPowerUpAmount("");
+        setPowerUpRecipient("");
+        refetch();
+        setIsProcessingPowerUp(false);
+        powerUpSubmittedRef.current = false;
+        return;
+      }
+      
       let errorMessage = "Operation failed";
       if (error.jse_shortmsg) {
         errorMessage = error.jse_shortmsg;
@@ -246,23 +233,27 @@ const PowerOperations = () => {
       }
       
       toast({
-        title: "Operation Failed",
+        title: "Power Up Failed",
         description: errorMessage,
         variant: "destructive",
       });
       setIsProcessingPowerUp(false);
+      // CRITICAL: Reset ref so user can retry
+      powerUpSubmittedRef.current = false;
     }
   };
 
   const handlePrivateKeyPowerDown = async (username: string, vestsAmount: string) => {
-    const privateKeyString = localStorage.getItem('steem_active_key');
+    // Get decrypted key from secure storage
+    const privateKeyString = await getDecryptedKey(username, 'active');
     if (!privateKeyString) {
       toast({
-        title: "Private Key Not Found",
-        description: "Active key required for this operation",
+        title: "Active Key Required",
+        description: "An active key is required for power down. Please import your key in Account settings.",
         variant: "destructive",
       });
       setIsProcessingPowerDown(false);
+      powerDownSubmittedRef.current = false;
       return;
     }
 
@@ -272,12 +263,30 @@ const PowerOperations = () => {
       
       toast({
         title: "Power Down Initiated",
-        description: `${powerDownAmount} STEEM power down started`,
+        description: `${powerDownAmount} STEEM power down has been started successfully.`,
+        variant: "success",
       });
       setPowerDownAmount("");
       refetch();
+      // DO NOT reset powerDownSubmittedRef on success - will be reset when form is reinitiated
       setIsProcessingPowerDown(false);
+      powerDownSubmittedRef.current = false;
     } catch (error: any) {
+      // Check for duplicate transaction - treat as SUCCESS
+      const isDuplicate = error?.message?.includes('duplicate') || error?.jse_shortmsg?.includes('duplicate');
+      if (isDuplicate) {
+        toast({
+          title: "Power Down Already Processed",
+          description: "This power down transaction was already submitted successfully.",
+          variant: "success",
+        });
+        setPowerDownAmount("");
+        refetch();
+        setIsProcessingPowerDown(false);
+        powerDownSubmittedRef.current = false;
+        return;
+      }
+      
       let errorMessage = "Operation failed";
       if (error.jse_shortmsg) {
         errorMessage = error.jse_shortmsg;
@@ -286,11 +295,13 @@ const PowerOperations = () => {
       }
       
       toast({
-        title: "Operation Failed",
+        title: "Power Down Failed",
         description: errorMessage,
         variant: "destructive",
       });
       setIsProcessingPowerDown(false);
+      // CRITICAL: Reset ref so user can retry
+      powerDownSubmittedRef.current = false;
     }
   };
 
@@ -298,13 +309,13 @@ const PowerOperations = () => {
     <div className="space-y-6">
       {/* Login requirement notice */}
       {!isLoggedIn && (
-        <Card className="bg-blue-50 border border-blue-200 shadow-sm">
+        <Card className="bg-blue-900/30 border border-blue-700 shadow-sm">
           <CardContent className="p-4">
             <div className="flex items-start gap-3">
-              <Lock className="w-5 h-5 text-blue-500 mt-0.5" />
+              <Lock className="w-5 h-5 text-blue-400 mt-0.5" />
               <div>
-                <p className="text-sm font-medium text-blue-800">Login Required</p>
-                <p className="text-xs text-blue-700">
+                <p className="text-sm font-medium text-blue-300">Login Required</p>
+                <p className="text-xs text-blue-400">
                   You must be logged in to perform power operations.
                 </p>
               </div>
@@ -324,28 +335,28 @@ const PowerOperations = () => {
       )}
 
       {/* Power Up Operations */}
-      <Card className="bg-white border border-gray-200 shadow-sm">
+      <Card className="bg-slate-800/50 border border-slate-700 shadow-sm">
         <CardHeader>
-          <CardTitle className="text-gray-800">Power Up</CardTitle>
-          <CardDescription className="text-gray-600">
+          <CardTitle className="text-white">Power Up</CardTitle>
+          <CardDescription className="text-slate-400">
             Convert STEEM to STEEM Power
-            {!isLoggedIn && <span className="text-blue-600"> (Login required)</span>}
+            {!isLoggedIn && <span className="text-blue-400"> (Login required)</span>}
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="space-y-2">
-            <Label htmlFor="power-up-recipient" className="text-gray-700">Recipient (optional)</Label>
+            <Label htmlFor="power-up-recipient" className="text-slate-300">Recipient (optional)</Label>
             <Input
               id="power-up-recipient"
               value={powerUpRecipient}
               onChange={(e) => setPowerUpRecipient(e.target.value)}
               placeholder="username (leave empty to power up to yourself)"
-              className="bg-white border-gray-300"
+              className="bg-slate-800 border-slate-700 text-white"
               disabled={!isLoggedIn || isProcessingPowerUp}
             />
           </div>
           <div className="space-y-2">
-            <Label htmlFor="power-up-amount" className="text-gray-700">Amount (STEEM)</Label>
+            <Label htmlFor="power-up-amount" className="text-slate-300">Amount (STEEM)</Label>
             <Input
               id="power-up-amount"
               type="number"
@@ -353,7 +364,7 @@ const PowerOperations = () => {
               onChange={(e) => setPowerUpAmount(e.target.value)}
               placeholder="0.000"
               step="0.001"
-              className="bg-white border-gray-300"
+              className="bg-slate-800 border-slate-700 text-white"
               disabled={!isLoggedIn || isProcessingPowerUp}
             />
           </div>
@@ -381,18 +392,18 @@ const PowerOperations = () => {
       </Card>
 
       {/* Power Down Operations */}
-      <Card className="bg-white border border-gray-200 shadow-sm">
+      <Card className="bg-slate-800/50 border border-slate-700 shadow-sm">
         <CardHeader>
-          <CardTitle className="text-gray-800">Power Down</CardTitle>
-          <CardDescription className="text-gray-600">
+          <CardTitle className="text-white">Power Down</CardTitle>
+          <CardDescription className="text-slate-400">
             Convert STEEM Power to STEEM
-            {!isLoggedIn && <span className="text-blue-600"> (Login required)</span>}
-            {isPowerDownActive && <span className="text-orange-600"> (Already active - cancel first)</span>}
+            {!isLoggedIn && <span className="text-blue-400"> (Login required)</span>}
+            {isPowerDownActive && <span className="text-orange-400"> (Already active - cancel first)</span>}
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="space-y-2">
-            <Label htmlFor="power-down-amount" className="text-gray-700">Amount (SP)</Label>
+            <Label htmlFor="power-down-amount" className="text-slate-300">Amount (SP)</Label>
             <Input
               id="power-down-amount"
               type="number"
@@ -400,7 +411,7 @@ const PowerOperations = () => {
               onChange={(e) => setPowerDownAmount(e.target.value)}
               placeholder="0.000"
               step="0.001"
-              className="bg-white border-gray-300"
+              className="bg-slate-800 border-slate-700 text-white"
               disabled={!isLoggedIn || isProcessingPowerDown || isPowerDownActive}
             />
           </div>
