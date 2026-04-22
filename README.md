@@ -1,6 +1,5 @@
 # SteemWallet - Blockchain Wallet Application
 
-![Project Banner](https://via.placeholder.com/1200x400?text=SteemWallet+Banner) <!-- Replace with actual banner image -->
 
 ## 📌 Project Repository
 
