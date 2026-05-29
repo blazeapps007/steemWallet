@@ -2,6 +2,8 @@
 
 import { steem } from '@steemit/steem-js';
 
+import { unixSecToSteemIsoTimestamp } from '@/lib/steem/chain-time';
+
 import type {
   Operation,
   SignedTransaction,
@@ -268,6 +270,90 @@ export class SteemSigner {
     return await this.signTransaction(operations, [activeKey]);
   }
 
+  static async signUpdateProposalVotes(
+    voter: string,
+    proposalIds: number[],
+    approve: boolean,
+    activeKey: string
+  ): Promise<SignedTransaction> {
+    const operations: Operation[] = [
+      [
+        'update_proposal_votes',
+        {
+          voter,
+          proposal_ids: proposalIds,
+          approve,
+        },
+      ],
+    ];
+    return await this.signTransaction(operations, [activeKey]);
+  }
+
+  static async signCreateProposal(
+    creator: string,
+    receiver: string,
+    startDate: string,
+    endDate: string,
+    dailyPay: string,
+    subject: string,
+    permlink: string,
+    activeKey: string
+  ): Promise<SignedTransaction> {
+    const operations: Operation[] = [
+      [
+        'create_proposal',
+        {
+          creator,
+          receiver,
+          start_date: startDate,
+          end_date: endDate,
+          daily_pay: dailyPay,
+          subject,
+          permlink,
+        },
+      ],
+    ];
+    return await this.signTransaction(operations, [activeKey]);
+  }
+
+  static async signRemoveProposal(
+    proposalOwner: string,
+    proposalIds: number[],
+    activeKey: string
+  ): Promise<SignedTransaction> {
+    const operations: Operation[] = [
+      [
+        'remove_proposal',
+        {
+          proposal_owner: proposalOwner,
+          proposal_ids: proposalIds,
+        },
+      ],
+    ];
+    return await this.signTransaction(operations, [activeKey]);
+  }
+
+  /**
+   * Sign a witness proxy operation
+   */
+  static async signWitnessProxy(
+    account: string,
+    proxy: string,
+    activeKey: string
+  ): Promise<SignedTransaction> {
+    const operations: Operation[] = [
+      [
+        'account_witness_proxy',
+        {
+          account,
+          proxy,
+        },
+      ],
+    ];
+
+    return await this.signTransaction(operations, [activeKey]);
+  }
+
   /**
    * Set power-down withdraw routing (set_withdraw_vesting_route).
    * `percent` is chain units (legacy: Math.round(uiPercent * 100)).
@@ -309,6 +395,49 @@ export class SteemSigner {
           owner,
           requestid,
           amount,
+        },
+      ],
+    ];
+    return await this.signTransaction(operations, [activeKey]);
+  }
+
+  static async signLimitOrderCreate(
+    owner: string,
+    amountToSell: string,
+    minToReceive: string,
+    orderid: number,
+    expiration: number,
+    activeKey: string,
+    fillOrKill = false
+  ): Promise<SignedTransaction> {
+    const operations: Operation[] = [
+      [
+        'limit_order_create',
+        {
+          owner,
+          amount_to_sell: amountToSell,
+          min_to_receive: minToReceive,
+          fill_or_kill: fillOrKill,
+          // condenser_api expects ISO time_point_sec in JSON, not unix seconds
+          expiration: unixSecToSteemIsoTimestamp(expiration),
+          orderid,
+        },
+      ],
+    ];
+    return await this.signTransaction(operations, [activeKey]);
+  }
+
+  static async signLimitOrderCancel(
+    owner: string,
+    orderid: number,
+    activeKey: string
+  ): Promise<SignedTransaction> {
+    const operations: Operation[] = [
+      [
+        'limit_order_cancel',
+        {
+          owner,
+          orderid,
         },
       ],
     ];
@@ -545,8 +674,59 @@ export const apiClient = {
   async broadcastWitnessVote(
     signedTx: SignedTransaction,
     username: string
-  ): Promise<{ success: boolean; result?: BroadcastResult; error?: string }> {
+  ): Promise<{ success: boolean; result?: BroadcastResult; error?: string; details?: string }> {
     const response = await fetch('/api/broadcast/witness-vote', {
+      method: 'POST',
+      headers: withCSRFHeader({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ signedTx, username }),
+    });
+    return response.json();
+  },
+
+  async broadcastProposalVote(
+    signedTx: SignedTransaction,
+    username: string
+  ): Promise<{ success: boolean; result?: BroadcastResult; error?: string; details?: string }> {
+    const response = await fetch('/api/broadcast/proposal-vote', {
+      method: 'POST',
+      headers: withCSRFHeader({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ signedTx, username }),
+    });
+    return response.json();
+  },
+
+  async broadcastProposalCreate(
+    signedTx: SignedTransaction,
+    username: string
+  ): Promise<{ success: boolean; result?: BroadcastResult; error?: string; details?: string }> {
+    const response = await fetch('/api/broadcast/proposal-create', {
+      method: 'POST',
+      headers: withCSRFHeader({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ signedTx, username }),
+    });
+    return response.json();
+  },
+
+  async broadcastProposalRemove(
+    signedTx: SignedTransaction,
+    username: string
+  ): Promise<{ success: boolean; result?: BroadcastResult; error?: string; details?: string }> {
+    const response = await fetch('/api/broadcast/proposal-remove', {
+      method: 'POST',
+      headers: withCSRFHeader({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ signedTx, username }),
+    });
+    return response.json();
+  },
+
+  /**
+   * Broadcast a signed witness proxy
+   */
+  async broadcastWitnessProxy(
+    signedTx: SignedTransaction,
+    username: string
+  ): Promise<{ success: boolean; result?: BroadcastResult; error?: string }> {
+    const response = await fetch('/api/broadcast/witness-proxy', {
       method: 'POST',
       headers: withCSRFHeader({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ signedTx, username }),
@@ -709,5 +889,48 @@ export const apiClient = {
       ...(data.error !== undefined ? { error: data.error } : {}),
       ...(data.details !== undefined ? { details: data.details } : {}),
     };
+  },
+
+  async getMarketData(params?: {
+    username?: string;
+    since?: string;
+  }): Promise<{
+    success?: boolean;
+    orderbook?: { bids: unknown[]; asks: unknown[] };
+    ticker?: unknown;
+    trades?: { date: string; type: string; steem: number; sbd: number; price: number; stringPrice: string }[];
+    openOrders?: unknown[];
+    error?: string;
+  }> {
+    const qs = new URLSearchParams();
+    if (params?.username) qs.set('username', params.username);
+    if (params?.since) qs.set('since', params.since);
+    const suffix = qs.toString() ? `?${qs.toString()}` : '';
+    const response = await fetch(`/api/query/market${suffix}`);
+    return response.json();
+  },
+
+  async broadcastLimitOrderCreate(
+    signedTx: SignedTransaction,
+    username: string
+  ): Promise<{ success: boolean; result?: BroadcastResult; error?: string; details?: string }> {
+    const response = await fetch('/api/broadcast/limit-order-create', {
+      method: 'POST',
+      headers: withCSRFHeader({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ signedTx, username }),
+    });
+    return response.json();
+  },
+
+  async broadcastLimitOrderCancel(
+    signedTx: SignedTransaction,
+    username: string
+  ): Promise<{ success: boolean; result?: BroadcastResult; error?: string; details?: string }> {
+    const response = await fetch('/api/broadcast/limit-order-cancel', {
+      method: 'POST',
+      headers: withCSRFHeader({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ signedTx, username }),
+    });
+    return response.json();
   },
 };

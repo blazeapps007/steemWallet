@@ -49,6 +49,7 @@ export interface SteemAccount {
   vesting_balance: string;
   reputation: number;
   witness_votes: string[];
+  proxy?: string;
 }
 
 export interface SignedTransaction {
@@ -132,4 +133,42 @@ export interface Witness {
   votes: string;
   schedule: string;
  _skeets_json_metadata: string;
+}
+
+export type ProposalOrderBy =
+  | 'by_total_votes'
+  | 'by_creator'
+  | 'by_start_date'
+  | 'by_end_date';
+
+export type ProposalOrderDirection = 'ascending' | 'descending';
+
+export type ProposalStatus =
+  | 'all'
+  | 'inactive'
+  | 'active'
+  | 'expired'
+  | 'votable'
+  | 'disabled';
+
+export type SteemAsset =
+  | string
+  | {
+      amount: string | number;
+      precision?: number;
+      nai?: string;
+    };
+
+export interface Proposal {
+  id: number;
+  proposal_id: number;
+  creator: string;
+  receiver: string;
+  start_date: string;
+  end_date: string;
+  daily_pay: SteemAsset;
+  subject: string;
+  permlink: string;
+  total_votes: number | string;
+  upVoted?: boolean;
 }

@@ -3,6 +3,25 @@
 
 import { steem } from '@steemit/steem-js';
 
+import { formatSteemIsoTimestamp } from '@/lib/steem/chain-time';
+
+import {
+  ORDERBOOK_LIMIT,
+  RECENT_TRADES_LIMIT,
+} from '@/lib/market/constants';
+import {
+  parseOpenOrder,
+  parseOrderBook,
+  parseTicker,
+  parseTradeFill,
+} from '@/lib/market/parse';
+import type {
+  MarketOpenOrderRow,
+  MarketOrderRow,
+  MarketTicker,
+  MarketTradeRow,
+  RawOrderBookEntry,
+} from '@/lib/market/types';
 import type {
   SteemAccount,
   SignedTransaction,
@@ -10,6 +29,10 @@ import type {
   GlobalProperties,
   VestingDelegation,
   ExpiringVestingDelegation,
+  Proposal,
+  ProposalOrderBy,
+  ProposalOrderDirection,
+  ProposalStatus,
 } from './types';
 
 // Steem configuration from environment; support multiple URLs for failover
@@ -190,7 +213,7 @@ export class SteemService {
       const headBlockId =
         block?.previous ?? '0000000000000000000000000000000000000000';
       const refBlockPrefix = Buffer.from(headBlockId, 'hex').readUInt32LE(4);
-      const expiration = new Date(chainDate.getTime() + 600 * 1000).toISOString().replace('Z', '');
+      const expiration = formatSteemIsoTimestamp(new Date(chainDate.getTime() + 600 * 1000));
 
       return {
         ref_block_num: refBlockNum,
@@ -643,6 +666,173 @@ export class SteemService {
     // This is a simplified check
     // In practice, you'd need to check the account's keys
     return 'active'; // Default to active for most operations
+  }
+
+  static async getMarketOrderBook(): Promise<{ bids: MarketOrderRow[]; asks: MarketOrderRow[] }> {
+    return withFailover(async () => {
+      ensureConfigured();
+      const api = steem.api as unknown as {
+        getOrderBookAsync: (limit: number) => Promise<{
+          bids?: unknown[];
+          asks?: unknown[];
+        }>;
+      };
+      const raw = await api.getOrderBookAsync(ORDERBOOK_LIMIT);
+      return parseOrderBook({
+        bids: (raw.bids ?? []) as RawOrderBookEntry[],
+        asks: (raw.asks ?? []) as RawOrderBookEntry[],
+      });
+    });
+  }
+
+  static async getMarketTicker(): Promise<MarketTicker> {
+    return withFailover(async () => {
+      ensureConfigured();
+      const api = steem.api as unknown as {
+        getTickerAsync: () => Promise<Record<string, unknown>>;
+      };
+      const raw = await api.getTickerAsync();
+      return parseTicker(raw);
+    });
+  }
+
+  static async getMarketRecentTrades(limit = RECENT_TRADES_LIMIT): Promise<MarketTradeRow[]> {
+    return withFailover(async () => {
+      ensureConfigured();
+      const api = steem.api as unknown as {
+        getRecentTradesAsync: (n: number) => Promise<unknown[]>;
+      };
+      const raw = await api.getRecentTradesAsync(limit);
+      return (raw ?? [])
+        .map((t) => parseTradeFill(t as Record<string, unknown>))
+        .filter((t): t is MarketTradeRow => t !== null);
+    });
+  }
+
+  static async getMarketTradeHistorySince(sinceIso: string): Promise<MarketTradeRow[]> {
+    return withFailover(async () => {
+      ensureConfigured();
+      const api = steem.api as unknown as {
+        getTradeHistoryAsync: (start: string, end: string, limit: number) => Promise<unknown[]>;
+      };
+      const start = sinceIso.replace(/\.\d{3}Z$/, '').replace(/Z$/, '');
+      const raw = await api.getTradeHistoryAsync(start, '1969-12-31T23:59:59', 1000);
+      return (raw ?? [])
+        .map((t) => parseTradeFill(t as Record<string, unknown>))
+        .filter((t): t is MarketTradeRow => t !== null)
+        .reverse();
+    });
+  }
+
+  static async getMarketOpenOrders(username: string): Promise<MarketOpenOrderRow[]> {
+    return withFailover(async () => {
+      ensureConfigured();
+      const api = steem.api as unknown as {
+        getOpenOrdersAsync: (owner: string) => Promise<
+          {
+            orderid: number;
+            created: string;
+            sell_price: { base: string; quote: string };
+            for_sale?: number;
+          }[]
+        >;
+      };
+      const raw = await api.getOpenOrdersAsync(username);
+      return (raw ?? []).map(parseOpenOrder);
+    });
+  }
+
+  static async listProposals(params: {
+    start: unknown[];
+    limit: number;
+    order: ProposalOrderBy;
+    order_direction: ProposalOrderDirection;
+    status: ProposalStatus;
+  }): Promise<Proposal[]> {
+    return withFailover(async () => {
+      ensureConfigured();
+      const api = steem.api as unknown as {
+        callAsync: (method: string, params: unknown) => Promise<unknown>;
+      };
+      const result = (await api.callAsync('database_api.list_proposals', {
+        start: params.start,
+        limit: params.limit,
+        order: params.order,
+        order_direction: params.order_direction,
+        status: params.status,
+      })) as { proposals?: unknown[] } | null;
+      if (!result || !Array.isArray(result.proposals)) return [];
+      return result.proposals as Proposal[];
+    }).catch((error) => {
+      console.error('Error fetching proposals:', error);
+      throw new Error(`Failed to fetch proposals: ${(error as Error).message}`);
+    });
+  }
+
+  static async getChainConfig(): Promise<Record<string, unknown>> {
+    return withFailover(async () => {
+      ensureConfigured();
+      const api = steem.api as unknown as {
+        callAsync: (method: string, params: unknown) => Promise<unknown>;
+      };
+      const result = await api.callAsync('database_api.get_config', {});
+      return (result ?? {}) as Record<string, unknown>;
+    }).catch((error) => {
+      console.error('Error fetching chain config:', error);
+      throw new Error(`Failed to fetch chain config: ${(error as Error).message}`);
+    });
+  }
+
+  static async listProposalVotesByProposal(
+    proposalId: number,
+    options?: { lastVoter?: string; limit?: number }
+  ): Promise<{ voter: string; proposal: { proposal_id: number } }[]> {
+    return withFailover(async () => {
+      ensureConfigured();
+      const api = steem.api as unknown as {
+        callAsync: (method: string, params: unknown) => Promise<unknown>;
+      };
+      const lastVoter = options?.lastVoter ?? '';
+      const limit = options?.limit ?? 1000;
+      const result = (await api.callAsync('database_api.list_proposal_votes', {
+        start: [proposalId, lastVoter],
+        limit,
+        order: 'by_proposal_voter',
+        order_direction: 'ascending',
+        status: 'active',
+      })) as { proposal_votes?: unknown[] } | null;
+      if (!result || !Array.isArray(result.proposal_votes)) return [];
+      return result.proposal_votes as { voter: string; proposal: { proposal_id: number } }[];
+    }).catch((error) => {
+      console.error('Error fetching proposal votes by proposal:', error);
+      throw new Error(`Failed to fetch proposal votes: ${(error as Error).message}`);
+    });
+  }
+
+  static async listProposalVotesByVoter(voter: string): Promise<
+    {
+      voter: string;
+      proposal: { proposal_id: number };
+    }[]
+  > {
+    return withFailover(async () => {
+      ensureConfigured();
+      const api = steem.api as unknown as {
+        callAsync: (method: string, params: unknown) => Promise<unknown>;
+      };
+      const result = (await api.callAsync('database_api.list_proposal_votes', {
+        start: [voter],
+        limit: 1000,
+        order: 'by_voter_proposal',
+        order_direction: 'ascending',
+        status: 'all',
+      })) as { proposal_votes?: unknown[] } | null;
+      if (!result || !Array.isArray(result.proposal_votes)) return [];
+      return result.proposal_votes as { voter: string; proposal: { proposal_id: number } }[];
+    }).catch((error) => {
+      console.error('Error fetching proposal votes:', error);
+      throw new Error(`Failed to fetch proposal votes: ${(error as Error).message}`);
+    });
   }
 }
 
